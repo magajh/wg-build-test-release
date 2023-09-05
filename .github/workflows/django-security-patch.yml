@@ -1,10 +1,10 @@
 name: Django Security Patch Automation
 
 on:
-  schedule:
-    - cron: '0 10 10 * *'
+  - pull_request
 
 env:
+  # TODO: HOW CAN WE CREATE AN ALERT EACH TIME A NEW NAMED VERSION IS RELEASED SO WE CAN KEEP THIS WORKFLOW UPDATED?
   LATEST_OPENEDX_RELEASE: 'Palm'
   PACKAGE: 'Django'
   MAJOR_PKG_VERSION: '3'
@@ -37,22 +37,31 @@ jobs:
         echo "DATE=$current_year-$(printf "%02d" $last_month)-01" >> $GITHUB_ENV
 
     - name: Retrieve GitHub Django advisories
-      # TODO: We might want to consider using the GraphQL API instead
-      # https://docs.github.com/en/enterprise-cloud@latest/graphql/reference/queries#securityvulnerabilities
       run: |
-        echo "RESPONSE=$(curl --fail "https://api.github.com/advisories?ecosystem=$PKG_ECOSYSTEM&affects=$PACKAGE&type=reviewed&published=>=$DATE")" >> $GITHUB_ENV
+        RESPONSE=$(curl --fail "https://api.github.com/advisories?ecosystem=${PKG_ECOSYSTEM}&affects=${PACKAGE}&type=reviewed&published=>=2023-07-01")
+        echo "API Response: $RESPONSE"  # Print the API response for debugging
+
+        echo "$RESPONSE" > /tmp/response.json
 
     - name: Assess Django version vulnerability
       id: vulnerability-check
-      # TODO: Consider moving this python script to a separate file for better maintainability and readability
       run: |
         python <<EOF
         import json
         import os
         import re
 
+        # Read the saved JSON response from the previous step
+        with open('/tmp/response.json', 'r') as f:
+            response_data = f.read()
+
+        print(f"RESPONSE DATA {response_data}")
+        if not response_data or response_data == "[]":
+            print("No Django advisory found. Workflow will exit successfully.")
+            exit(0)
+
         try:
-            data = json.loads(os.environ['RESPONSE'])
+            data = json.loads(response_data)
             current_version = f"{os.environ['MAJOR_PKG_VERSION']}.{os.environ['MINOR_PKG_VERSION']}"
             latest_patched_version = None
             advisory_description = ""
@@ -88,26 +97,55 @@ jobs:
             exit(1)
         EOF
 
-    - name: Retrieve tasks from supported repositories
-      id: fetch-tasks
-      run: |
-        echo "::set-output name=tasks::$(cat .github/latest_openedx_release_supported_repos.txt)"
-
+# TODO: REMOVE LATEST OPENEDX RELEASE NAME FROM THE ISSUE TITLE
+# TODO: IN THE DESCRIPTION ASK IF THERE IS A NEW UPCOMING RELEASE WITH A DJANGO VERSION
+# AFFECTED BY THE ADVISORY AND ASK TO OPEN THE PRs TOO
     - name: Create issue for security patch
-      if: steps.vulnerability-check.outputs.latest_patched_version # Only run if this output exists
+      if: steps.vulnerability-check.outputs.latest_patched_version
       uses: actions-ecosystem/action-create-issue@v1
       with:
-        # TODO: Check token generation
-        github_token: ${{ secrets.GITHUB_TOKEN }}
+        github_token: ${{ secrets.WORKFLOW_TOKEN }}
         title: "${{ env.PACKAGE }} ${{ steps.vulnerability-check.outputs.latest_patched_version }} security patch (${{ env.LATEST_OPENEDX_RELEASE }})"
         body: |
-          Apply ${{ steps.vulnerability-check.outputs.latest_patched_version }} to ${{ env.LATEST_OPENEDX_RELEASE }} branches 
-          ${{ steps.vulnerability-check.outputs.advisory_description }}
-          severity: ${{ steps.vulnerability-check.outputs.advisory_severity }}
-          references: ${{ steps.vulnerability-check.outputs.advisory_references }}
+          ## Apply latest ${{ env.PACKAGE }} security patch
 
-          ### Open edX services to upgrade:
-          ${{ steps.fetch-tasks.outputs.tasks }}
+          **Version:** ${{ steps.vulnerability-check.outputs.latest_patched_version }}
+          **Affected Open edX named release:** ${{ env.LATEST_OPENEDX_RELEASE }}
+
+          ---
+
+          ### Vulnerability description
+
+          ${{ steps.vulnerability-check.outputs.advisory_description }}
+
+          ---
+
+          ### Severity
+
+          ${{ steps.vulnerability-check.outputs.advisory_severity }}
+
+          ---
+
+          ### Open edX services to upgrade
+
+          - [ ] edx-platform
+          - [ ] enterprise-catalog
+          - [ ] enterprise-access
+          - [ ] ecommerce
+          - [ ] ecommerce-worker
+          - [ ] edx-analytics-data-api
+          - [ ] edx-analytics-dashboard
+          - [ ] credentials
+          - [ ] xqueue
+          - [ ] tubular
+          - [ ] edx-notes-api
+          - [ ] license-manager
+          - [ ] course-discovery
+          - [ ] taxonomy-connector
+          - [ ] openedxstats
+          - [ ] blockstore
+          - [ ] registrar
+
         labels: |
           security
 
